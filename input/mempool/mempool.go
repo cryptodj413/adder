@@ -15,12 +15,20 @@
 package mempool
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/SundaeSwap-finance/kugo"
 	"github.com/blinklabs-io/adder/event"
+	"github.com/blinklabs-io/adder/input/chainsync"
+	"github.com/blinklabs-io/adder/internal/config"
+	"github.com/blinklabs-io/adder/internal/logging"
 	"github.com/blinklabs-io/adder/plugin"
 	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/ledger"
@@ -28,7 +36,9 @@ import (
 )
 
 const (
-	defaultPollInterval = 5 * time.Second
+	defaultPollInterval   = 5 * time.Second
+	defaultKupoTimeout    = 30 * time.Second
+	kupoHealthTimeout     = 3 * time.Second
 )
 
 type Mempool struct {
@@ -41,6 +51,7 @@ type Mempool struct {
 	includeCbor     bool
 	pollIntervalStr string
 	pollInterval    time.Duration
+	kupoUrl         string
 
 	eventChan    chan event.Event
 	errorChan    chan error
@@ -51,6 +62,10 @@ type Mempool struct {
 	dialFamily   string
 	dialAddress  string
 	seenTxHashes map[string]struct{}
+
+	kupoClient            *kugo.Client
+	kupoDisabled          bool
+	kupoInvalidPatternLogged bool
 }
 
 // New returns a new Mempool input plugin
@@ -85,6 +100,15 @@ func (m *Mempool) Start() error {
 		m.errorChan = make(chan error, 1)
 	}
 	m.doneChan = make(chan struct{})
+
+	if m.kupoUrl == "" {
+		m.kupoUrl = config.GetConfig().KupoUrl
+	}
+	if m.kupoUrl == "" {
+		m.logger.Info("Kupo URL not set; resolved inputs will be omitted (set KUPO_URL or --input-mempool-kupo-url)")
+	} else {
+		m.logger.Info("Using Kupo for input resolution", "url", m.kupoUrl)
+	}
 
 	if err := m.setupConnection(); err != nil {
 		return err
@@ -316,6 +340,16 @@ func (m *Mempool) pollOnce() {
 		}
 		ctx := event.NewMempoolTransactionContext(p.tx, 0, m.networkMagic)
 		payload := event.NewTransactionEventFromTx(p.tx, m.includeCbor)
+		if m.kupoUrl != "" && !m.kupoDisabled {
+			resolvedInputs, err := m.resolveTransactionInputs(p.tx)
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Warn("failed to resolve transaction inputs via Kupo, emitting without resolved inputs", "error", err)
+				}
+			} else if len(resolvedInputs) > 0 {
+				payload.ResolvedInputs = resolvedInputs
+			}
+		}
 		evt := event.New("input.transaction", time.Now(), ctx, payload)
 		select {
 		case <-m.doneChan:
@@ -334,4 +368,97 @@ func (m *Mempool) parseTx(data []byte) (ledger.Transaction, error) {
 		return nil, err
 	}
 	return ledger.NewTransactionFromCbor(txType, data)
+}
+
+func (m *Mempool) getKupoClient() (*kugo.Client, error) {
+	if m.kupoClient != nil {
+		return m.kupoClient, nil
+	}
+	urlStr := m.kupoUrl
+	if urlStr == "" {
+		return nil, errors.New("kupo URL not configured")
+	}
+	_, err := url.ParseRequestURI(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid kupo URL: %w", err)
+	}
+	kugoLogger := logging.NewKugoCustomLogger(logging.LevelInfo)
+	k := kugo.New(
+		kugo.WithEndpoint(urlStr),
+		kugo.WithLogger(kugoLogger),
+		kugo.WithTimeout(defaultKupoTimeout),
+	)
+	healthURL := strings.TrimRight(urlStr, "/") + "/health"
+	ctx, cancel := context.WithTimeout(context.Background(), kupoHealthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create health check request: %w", err)
+	}
+	httpClient := &http.Client{Timeout: kupoHealthTimeout}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, errors.New("kupo health check timed out after 3 seconds")
+		case strings.Contains(err.Error(), "no such host"):
+			return nil, fmt.Errorf("failed to resolve kupo host: %w", err)
+		default:
+			return nil, fmt.Errorf("failed to perform health check: %w", err)
+		}
+	}
+	if resp == nil {
+		return nil, errors.New("health check failed with nil response")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return nil, fmt.Errorf("health check failed with status code: %d", resp.StatusCode)
+	}
+	m.kupoClient = k
+	return k, nil
+}
+
+func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction) ([]ledger.TransactionOutput, error) {
+	var resolvedInputs []ledger.TransactionOutput
+	k, err := m.getKupoClient()
+	if err != nil {
+		return nil, err
+	}
+	for _, input := range tx.Inputs() {
+		txID := input.Id().String()
+		txIndex := int(input.Index())
+		// Kupo output-reference pattern: output_index@transaction_id (see Kupo Patterns doc)
+		pattern := fmt.Sprintf("%d@%s", txIndex, txID)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultKupoTimeout)
+		matches, err := k.Matches(ctx, kugo.Pattern(pattern))
+		cancel()
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "Invalid pattern!") || strings.Contains(errStr, "cannot unmarshal object into Go value of type []kugo.Match") {
+				if !m.kupoInvalidPatternLogged {
+					m.kupoInvalidPatternLogged = true
+					if m.logger != nil {
+						m.logger.Debug("Kupo does not support output-reference pattern, disabling input resolution", "error", err)
+					}
+				}
+				m.kupoDisabled = true
+				return resolvedInputs, nil
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil, fmt.Errorf("kupo matches query timed out after %v", defaultKupoTimeout)
+			}
+			return nil, fmt.Errorf("error fetching matches for input TxId: %s, Index: %d: %w", txID, txIndex, err)
+		}
+		for _, match := range matches {
+			out, err := chainsync.NewResolvedTransactionOutput(match)
+			if err != nil {
+				return nil, err
+			}
+			resolvedInputs = append(resolvedInputs, out)
+		}
+		if len(matches) == 0 && m.logger != nil {
+			m.logger.Debug("Kupo returned no matches for input; ensure Kupo is run with a pattern that indexes this output (e.g. --match \"*\")", "pattern", pattern)
+		}
+	}
+	return resolvedInputs, nil
 }

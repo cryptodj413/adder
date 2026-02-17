@@ -71,7 +71,12 @@ func ExtractAssetDetailsFromMatch(
 				continue // Skip adding "lovelace" to assetsMap, as it is handled separately
 			}
 
-			byteStringAssetName := cbor.NewByteString([]byte(assetName))
+			// Kupo returns asset names as hex; decode so JSON gets correct name (UTF-8) and nameHex
+			assetNameBytes := []byte(assetName)
+			if decoded, err := hex.DecodeString(assetName); err == nil && len(decoded) > 0 {
+				assetNameBytes = decoded
+			}
+			byteStringAssetName := cbor.NewByteString(assetNameBytes)
 			policyAssets[byteStringAssetName] = amount.BigInt()
 			slog.Debug("Get policyId, assetName, assetAmount from match.Value")
 			slog.Debug(

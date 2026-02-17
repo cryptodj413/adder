@@ -29,6 +29,7 @@ var cmdlineOptions struct {
 	ntcTcp       bool
 	includeCbor  bool
 	pollInterval string
+	kupoUrl      string
 }
 
 func init() {
@@ -90,6 +91,14 @@ func init() {
 					DefaultValue: "5s",
 					Dest:         &(cmdlineOptions.pollInterval),
 				},
+				{
+					Name:         "kupo-url",
+					Type:         plugin.PluginOptionTypeString,
+					CustomEnvVar: "KUPO_URL",
+					Description:  "Kupo API URL for resolving transaction inputs (e.g. http://localhost:1442). Kupo must index the outputs you need (e.g. run with --match \"*\") or resolution will be empty.",
+					DefaultValue: "",
+					Dest:         &(cmdlineOptions.kupoUrl),
+				},
 			},
 		},
 	)
@@ -111,5 +120,6 @@ func NewFromCmdlineOptions() plugin.Plugin {
 		WithNtcTcp(cmdlineOptions.ntcTcp),
 		WithIncludeCbor(cmdlineOptions.includeCbor),
 		WithPollInterval(cmdlineOptions.pollInterval),
+		WithKupoUrl(cmdlineOptions.kupoUrl),
 	)
 }
