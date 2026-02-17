@@ -36,9 +36,9 @@ import (
 )
 
 const (
-	defaultPollInterval   = 5 * time.Second
-	defaultKupoTimeout    = 30 * time.Second
-	kupoHealthTimeout     = 3 * time.Second
+	defaultPollInterval = 5 * time.Second
+	defaultKupoTimeout  = 30 * time.Second
+	kupoHealthTimeout   = 3 * time.Second
 )
 
 type Mempool struct {
@@ -63,8 +63,8 @@ type Mempool struct {
 	dialAddress  string
 	seenTxHashes map[string]struct{}
 
-	kupoClient            *kugo.Client
-	kupoDisabled          bool
+	kupoClient               *kugo.Client
+	kupoDisabled             bool
 	kupoInvalidPatternLogged bool
 }
 
