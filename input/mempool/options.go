@@ -75,3 +75,10 @@ func WithPollInterval(duration string) MempoolOptionFunc {
 		m.pollIntervalStr = duration
 	}
 }
+
+// WithKupoUrl specifies the Kupo API URL for resolving transaction inputs (e.g. http://localhost:1442).
+func WithKupoUrl(kupoUrl string) MempoolOptionFunc {
+	return func(m *Mempool) {
+		m.kupoUrl = kupoUrl
+	}
+}

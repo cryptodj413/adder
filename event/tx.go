@@ -15,6 +15,8 @@
 package event
 
 import (
+	"encoding/json"
+
 	"github.com/blinklabs-io/gouroboros/ledger"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 )
@@ -41,6 +43,18 @@ type TransactionEvent struct {
 	TransactionCbor byteSliceJsonHex              `json:"transactionCbor,omitempty"`
 	Fee             uint64                        `json:"fee"`
 	TTL             uint64                        `json:"ttl,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler so that Witnesses (not JSON-serializable) are omitted
+// when logging or serializing events.
+func (e TransactionEvent) MarshalJSON() ([]byte, error) {
+	type alias TransactionEvent
+	return json.Marshal(&struct {
+		Witnesses *struct{} `json:"witnesses,omitempty"` // override: omit non-JSON-serializable TransactionWitnessSet
+		*alias
+	}{
+		alias: (*alias)(&e),
+	})
 }
 
 func NewTransactionContext(
