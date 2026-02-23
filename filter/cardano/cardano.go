@@ -355,7 +355,48 @@ func (c *Cardano) filterGovernanceEvent(ge event.GovernanceEvent) bool {
 		}
 	}
 
+	// Check pool filter
+	if c.filterSet.hasPoolFilter {
+		if !c.matchPoolFilterGovernance(ge) {
+			return false
+		}
+	}
+
 	return true
+}
+
+// matchPoolFilterGovernance checks if governance event contains matching pool IDs
+func (c *Cardano) matchPoolFilterGovernance(ge event.GovernanceEvent) bool {
+	// Check voting procedures (votes cast BY an SPO / pool)
+	for _, vote := range ge.VotingProcedures {
+		if vote.VoterType == "SPO" && vote.VoterHash != "" {
+			if _, exists := c.filterSet.pools.hexPoolIds[vote.VoterHash]; exists {
+				return true
+			}
+			// Also check bytes lookup for consistency with tx path (hex decode)
+			if hexBytes, err := hex.DecodeString(vote.VoterHash); err == nil {
+				if _, exists := c.filterSet.pools.bytesLookup[string(hexBytes)]; exists {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check vote delegation certificates that reference a pool (PoolKeyHash)
+	for _, cert := range ge.VoteDelegationCertificates {
+		if cert.PoolKeyHash != "" {
+			if _, exists := c.filterSet.pools.hexPoolIds[cert.PoolKeyHash]; exists {
+				return true
+			}
+			if hexBytes, err := hex.DecodeString(cert.PoolKeyHash); err == nil {
+				if _, exists := c.filterSet.pools.bytesLookup[string(hexBytes)]; exists {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // matchDRepFilterGovernance checks if governance event contains matching DRep IDs
