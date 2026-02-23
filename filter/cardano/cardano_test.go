@@ -898,7 +898,7 @@ func TestFilterByPoolIdGovernanceEvent(t *testing.T) {
 	t.Run("does not match when pool not in filter", func(t *testing.T) {
 		cs := New(WithPoolIds([]string{poolHex}))
 
-		otherPoolHex := "9999999999999999999999999999999999999999999999999999999999999999"
+		otherPoolHex := "99999999999999999999999999999999999999999999999999999999"
 		evt := event.Event{
 			Payload: event.GovernanceEvent{
 				VotingProcedures: []event.VotingProcedureData{
