@@ -835,8 +835,8 @@ func TestFilterByPoolId(t *testing.T) {
 }
 
 func TestFilterByPoolIdGovernanceEvent(t *testing.T) {
-	// Pool key hash is 32 bytes = 64 hex chars
-	poolHex := "abcd1234567890abcdef1234567890abcdef1234567890abcdef12345678"
+	// Pool key hash is 28 bytes = 56 hex chars (Blake2b-224)
+	poolHex := "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
 
 	t.Run("matches voting procedure BY filtered SPO", func(t *testing.T) {
 		cs := New(WithPoolIds([]string{poolHex}))
