@@ -458,7 +458,10 @@ func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo ma
 		}
 		k, err := m.getKupoClient()
 		if err != nil {
-			return nil, err
+			if m.logger != nil {
+				m.logger.Debug("Kupo client unavailable, skipping Kupo resolution for this input", "error", err, "txId", txID, "index", txIndex)
+			}
+			continue
 		}
 		pattern := fmt.Sprintf("%d@%s", txIndex, txID)
 		ctx, cancel := context.WithTimeout(context.Background(), defaultKupoTimeout)
@@ -470,21 +473,25 @@ func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo ma
 				if !m.kupoInvalidPatternLogged {
 					m.kupoInvalidPatternLogged = true
 					if m.logger != nil {
-						m.logger.Debug("Kupo does not support output-reference pattern, disabling input resolution", "error", err)
+						m.logger.Debug("Kupo does not support output-reference pattern, disabling Kupo input resolution", "error", err)
 					}
 				}
 				m.kupoDisabled = true
 				continue
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				return nil, fmt.Errorf("kupo matches query timed out after %v", defaultKupoTimeout)
+			// Log and skip this input so we keep any already-resolved (e.g. mempool) inputs.
+			if m.logger != nil {
+				m.logger.Warn("Kupo lookup failed for input, skipping; partial resolved inputs preserved", "error", err, "txId", txID, "index", txIndex)
 			}
-			return nil, fmt.Errorf("error fetching matches for input TxId: %s, Index: %d: %w", txID, txIndex, err)
+			continue
 		}
 		for _, match := range matches {
 			out, err := chainsync.NewResolvedTransactionOutput(match)
 			if err != nil {
-				return nil, err
+				if m.logger != nil {
+					m.logger.Debug("failed to build resolved output from Kupo match, skipping", "error", err, "txId", txID, "index", txIndex)
+				}
+				continue
 			}
 			resolvedInputs = append(resolvedInputs, out)
 		}
