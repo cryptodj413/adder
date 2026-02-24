@@ -108,13 +108,26 @@ func (m *Mempool) Start() error {
 	}
 	m.doneChan = make(chan struct{})
 
+	// Reset Kupo state on each start so configuration changes or temporary
+	// errors don't permanently disable input resolution.
+	m.kupoClient = nil
+	m.kupoDisabled = false
+	m.kupoInvalidPatternLogged = false
+
 	if m.kupoUrl == "" {
 		m.kupoUrl = config.GetConfig().KupoUrl
 	}
-	if m.kupoUrl == "" {
-		m.logger.Info("Kupo URL not set; inputs will be resolved from mempool only (chained txs). Set KUPO_URL or --input-mempool-kupo-url to also resolve on-chain inputs.")
-	} else {
-		m.logger.Info("Using Kupo for input resolution (on-chain); mempool chained txs resolved from poll", "url", m.kupoUrl)
+	if m.logger != nil {
+		if m.kupoUrl == "" {
+			m.logger.Info(
+				"Kupo URL not set; inputs will be resolved from mempool only (chained txs). Set KUPO_URL or --input-mempool-kupo-url to also resolve on-chain inputs.",
+			)
+		} else {
+			m.logger.Info(
+				"Using Kupo for input resolution (on-chain); mempool chained txs resolved from poll",
+				"url", m.kupoUrl,
+			)
+		}
 	}
 
 	if err := m.setupConnection(); err != nil {
