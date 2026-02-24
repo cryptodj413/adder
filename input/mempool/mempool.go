@@ -347,13 +347,12 @@ func (m *Mempool) pollOnce() {
 		}
 		ctx := event.NewMempoolTransactionContext(p.tx, 0, m.networkMagic)
 		payload := event.NewTransactionEventFromTx(p.tx, m.includeCbor)
-		resolvedInputs, err := m.resolveTransactionInputs(p.tx, mempoolUtxo)
-		if err != nil {
-			if m.logger != nil {
-				m.logger.Warn("failed to resolve transaction inputs, emitting without resolved inputs", "error", err)
-			}
-		} else if len(resolvedInputs) > 0 {
+		resolvedInputs, resolveErr := m.resolveTransactionInputs(p.tx, mempoolUtxo)
+		if len(resolvedInputs) > 0 {
 			payload.ResolvedInputs = resolvedInputs
+		}
+		if resolveErr != nil && m.logger != nil {
+			m.logger.Warn("some transaction inputs could not be resolved; partial resolved inputs may be set", "error", resolveErr)
 		}
 		evt := event.New("input.transaction", time.Now(), ctx, payload)
 		select {
@@ -439,8 +438,13 @@ func (m *Mempool) buildMempoolUtxo(pollTxs []pollTx) map[string]ledger.Transacti
 	return utxo
 }
 
+// resolveTransactionInputs resolves each input from the mempool UTxO set (chained
+// txs) or Kupo (on-chain). It always returns whatever could be resolved. If any
+// input failed to resolve (e.g. Kupo error), the second return is a non-nil error
+// so the caller can log it; partial results are still returned.
 func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo map[string]ledger.TransactionOutput) ([]ledger.TransactionOutput, error) {
 	var resolvedInputs []ledger.TransactionOutput
+	var resolveErrs []error
 	for _, input := range tx.Inputs() {
 		txID := input.Id().String()
 		txIndex := int(input.Index())
@@ -458,9 +462,7 @@ func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo ma
 		}
 		k, err := m.getKupoClient()
 		if err != nil {
-			if m.logger != nil {
-				m.logger.Debug("Kupo client unavailable, skipping Kupo resolution for this input", "error", err, "txId", txID, "index", txIndex)
-			}
+			resolveErrs = append(resolveErrs, fmt.Errorf("input %s:%d kupo client: %w", txID, txIndex, err))
 			continue
 		}
 		pattern := fmt.Sprintf("%d@%s", txIndex, txID)
@@ -479,18 +481,13 @@ func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo ma
 				m.kupoDisabled = true
 				continue
 			}
-			// Log and skip this input so we keep any already-resolved (e.g. mempool) inputs.
-			if m.logger != nil {
-				m.logger.Warn("Kupo lookup failed for input, skipping; partial resolved inputs preserved", "error", err, "txId", txID, "index", txIndex)
-			}
+			resolveErrs = append(resolveErrs, fmt.Errorf("input %s:%d: %w", txID, txIndex, err))
 			continue
 		}
 		for _, match := range matches {
 			out, err := chainsync.NewResolvedTransactionOutput(match)
 			if err != nil {
-				if m.logger != nil {
-					m.logger.Debug("failed to build resolved output from Kupo match, skipping", "error", err, "txId", txID, "index", txIndex)
-				}
+				resolveErrs = append(resolveErrs, fmt.Errorf("input %s:%d match: %w", txID, txIndex, err))
 				continue
 			}
 			resolvedInputs = append(resolvedInputs, out)
@@ -498,6 +495,9 @@ func (m *Mempool) resolveTransactionInputs(tx ledger.Transaction, mempoolUtxo ma
 		if len(matches) == 0 && m.logger != nil {
 			m.logger.Debug("Kupo returned no matches for input; ensure Kupo is run with a pattern that indexes this output (e.g. --match \"*\")", "pattern", pattern)
 		}
+	}
+	if len(resolveErrs) > 0 {
+		return resolvedInputs, errors.Join(resolveErrs...)
 	}
 	return resolvedInputs, nil
 }
